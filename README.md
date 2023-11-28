@@ -20,10 +20,10 @@
 include "log.h"
 int main() {
     PRE_ALLOC();
-	SET_LOG_FILE("test.log");
+    SET_LOG_FILE("test.log");
     SET_LOG_LEVEL(LOG_DEBUG);
-  	ASYNC_LOG(LOG_DEBUG, "{}", "test");
-  	ASYNC_LOG_KV(LOG_DEBUG, "test_event", ("KEY_1","VALUE"), ("KEY_2",1));
+    ASYNC_LOG(LOG_DEBUG, "{}", "test");
+    ASYNC_LOG_KV(LOG_DEBUG, "test_event", ("KEY_1","VALUE"), ("KEY_2",1));
     POLL();
 }
 //[2423031] [DEBUG] 2023-11-27T21:58:28.674968396 test/test.cc:349 test
