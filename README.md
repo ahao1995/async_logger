@@ -25,7 +25,7 @@ int main() {
 //[2423031] [DEBUG] 2023-11-27T21:58:28.674968396 test/test.cc:349 test
 //ts=2023-11-27T21:58:28.674969328 level=DEBUG pid=2423031 file=test/test.cc:350 event="test_event" KEY_1="VALUE" KEY_2=1
 ```
-```
+```C++
 struct test_object {
   int x;
   int y;
