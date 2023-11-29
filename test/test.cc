@@ -1,6 +1,7 @@
 #include "fmt_async.h"
 #include "log.h"
 #include "log_helper.h"
+#include <array>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -10,6 +11,7 @@
 #include <fmt/ranges.h>
 #include <gtest/gtest.h>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 using context = fmt::format_context;
@@ -30,27 +32,33 @@ struct test_custom {
 
 template <> struct fmt::formatter<test_custom> : formatter<string_view> {
   auto format(const test_custom &t, fmt::format_context &ctx) {
-    return ctx.out();
+    return fmt::format_to(ctx.out(), "hello");
   }
 };
 template <> struct async_logger::custom_store<test_custom> {
   static size_t alloc_size(const test_custom &t) { return strlen("hello"); };
   static char *store(char *&buf, test_custom &t) {
+    char *p_start = buf;
     buf = stpcpy(buf, "hello");
-    return buf;
+    return p_start;
   }
 };
 
 TEST(async_logger, trans_arg_type) {
   using namespace async_logger::detail;
+  static_assert(
+      std::is_same_v<transformed_arg_type<int[5], context>, int *const &>);
   static_assert(std::is_same_v<transformed_arg_type<std::string, context>,
                                fmt::basic_string_view<char>>);
   static_assert(std::is_same_v<transformed_arg_type<int, context>, int>);
 
   static_assert(std::is_same_v<transformed_arg_type<test_object, context>,
                                const test_object &>);
+  static_assert(std::is_same_v<transformed_arg_type<test_custom, context>,
+                               fmt::basic_string_view<char>>);
   static_assert(
-      std::is_same_v<transformed_arg_type<test_custom, context>, char *>);
+      std::is_same_v<transformed_arg_type<std::array<int, 5>, context>,
+                     const std::array<int, 5> &>);
   // test named arg transform
   static_assert(
       std::is_same_v<
@@ -65,6 +73,10 @@ TEST(async_logger, trans_arg_type) {
                                      context>,
                 fmt::detail::named_arg<char, fmt::basic_string_view<char>>>);
   static_assert(
+      std::is_same_v<transformed_arg_type<
+                         fmt::detail::named_arg<char, test_object &>, context>,
+                     fmt::detail::named_arg<char, test_object>>);
+  static_assert(
       std::is_same_v<
           transformed_arg_type<fmt::detail::named_arg<char, std::string_view>,
                                context>,
@@ -72,11 +84,11 @@ TEST(async_logger, trans_arg_type) {
   static_assert(
       std::is_same_v<transformed_arg_type<
                          fmt::detail::named_arg<char, test_object>, context>,
-                     fmt::detail::named_arg<char, const test_object &>>);
-  static_assert(
-      std::is_same_v<transformed_arg_type<
-                         fmt::detail::named_arg<char, test_custom>, context>,
-                     fmt::detail::named_arg<char, char *>>);
+                     fmt::detail::named_arg<char, test_object>>);
+  static_assert(std::is_same_v<
+                transformed_arg_type<fmt::detail::named_arg<char, test_custom>,
+                                     context>,
+                fmt::detail::named_arg<char, fmt::basic_string_view<char>>>);
 }
 
 TEST(async_logger, arg_transformer) {
@@ -84,6 +96,9 @@ TEST(async_logger, arg_transformer) {
   static_assert(
       arg_transformer<int, int, test_object>::get_obj_sum_size<context, 2>() ==
       sizeof(test_object));
+  static_assert(
+      arg_transformer<int, int, fmt::detail::named_arg<char, test_object>>::
+          get_obj_sum_size<context, 2>() == sizeof(test_object));
   static_assert(arg_transformer<int, test_object,
                                 test_object>::get_obj_sum_size<context, 2>() ==
                 2 * sizeof(test_object));
@@ -94,6 +109,9 @@ TEST(async_logger, arg_transformer) {
                                 char *>::get_cstring_idx<context, 5>() == 4);
   static_assert(arg_transformer<char *, int, char *, char *, int,
                                 char *>::get_cstring_idx<context, 3>() == 3);
+  static_assert(arg_transformer<char *, int, char *, char *, int,
+                                test_custom>::get_cstring_idx<context, 3>() ==
+                3);
 }
 
 TEST(async_logger, alloc_size) {
@@ -136,9 +154,8 @@ void test_arg_store(const S &fmt, Args &&...args) {
   std::string target =
       fmt::format(fmt::runtime(fmt), std::forward<Args>(args)...);
   auto entry = (async_entry<context> *)(buf);
-  constexpr size_t num_cstring =
-      fmt::detail::count<detail::is_cstring<context, Args>()...>();
-  size_t cstring_sizes[std::max(num_cstring, (size_t)1)];
+  size_t cstring_sizes[std::max(detail::get_cstring_num<context, Args...>(),
+                                (size_t)1)];
   size_t s = alloc_size<fmt::format_context>(cstring_sizes, args...);
   auto store_size =
       store((void *)buf, fmt, cstring_sizes, std::forward<Args>(args)...);
@@ -153,14 +170,22 @@ TEST(async_logger, arg_store) {
   test_arg_store("{} {} {}", 1, 2, "test");
   test_arg_store(get_format_string(18), short(1), (unsigned short)2, 3, 4U, 5L,
                  6UL, 7LL, 8ULL, 9.0F, 10.0, 11, 12, 13, 14, 15, 16, 17, 18);
+  // will decay int* do not use
+  //  int a[10];
+  //  test_arg_store("{}", a);
+  const test_object obj{1, 2};
+  test_custom custom{1, 2};
+  test_arg_store("{}", obj);
+  test_arg_store("{}", custom);
+  test_arg_store("{} {}", obj, custom);
   test_arg_store("The answer of {}*{a} is {product}", 6, "product"_a = 42,
                  "a"_a = 7);
   test_arg_store("Hello, {name}! The answer is {number}. Goodbye {name}.",
                  "name"_a = "World", "number"_a = 42);
-  test_object obj{1, 2};
-  test_arg_store("{}", obj);
-  test_custom custom{1, 2};
-  test_arg_store("{}", custom);
+  test_arg_store("Hello, {name}! The answer is {number}. Goodbye {name}.",
+                 "name"_a = custom, "number"_a = obj);
+  test_arg_store("Hello, {name}! The answer is {number}. Goodbye {name}.",
+                 "name"_a = "World", "number"_a = std::string("test"));
 }
 
 struct test_dtor {
@@ -224,6 +249,10 @@ TEST(async_logger, log) {
   SET_LOG_FILE("test.log");
 
   ASYNC_LOG(LOG_DEBUG, "{} {} {}", 1, "test", "test2");
+
+  test_object obj{1, 2};
+  test_custom custom{1, 2};
+  ASYNC_LOG(LOG_DEBUG, "{} {} {}", 1, obj, custom);
   std::string s = "test";
   const char buf[] = "const buf array";
   char buf2[64];

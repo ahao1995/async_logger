@@ -1,5 +1,6 @@
 #pragma once
 #include "string_literal.h"
+#include <cstddef>
 #include <fmt/core.h>
 #include <tuple>
 #include <type_traits>
@@ -99,15 +100,13 @@ static constexpr auto gen_fmt_helper(Func func) {
     constexpr auto e = func()[Idx];
     constexpr int l = e.size();
     constexpr char f[7] = "=\"{}\" ";
-    return string_literal<l>{e} +
-           string_literal<6>{f} +
+    return string_literal<l>{e} + string_literal<6>{f} +
            gen_fmt_helper<Idx + 1, Func, Args...>(func);
   } else {
     constexpr auto e = func()[Idx];
     constexpr int l = e.size();
     constexpr char f[5] = "={} ";
-    return string_literal<l>{e} +
-           string_literal<4>{f} +
+    return string_literal<l>{e} + string_literal<4>{f} +
            gen_fmt_helper<Idx + 1, Func, Args...>(func);
   }
 }

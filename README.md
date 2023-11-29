@@ -5,13 +5,9 @@
 #### 特点：
 
 - 基于fmt，提供丰富的format
-
 - 支持自定义结构和自定义formatter
-
 - 支持key-value结构化打印
-
-- 极速延迟低
-
+- 延迟低
 - header-only
 
 #### 使用
@@ -29,7 +25,35 @@ int main() {
 //[2423031] [DEBUG] 2023-11-27T21:58:28.674968396 test/test.cc:349 test
 //ts=2023-11-27T21:58:28.674969328 level=DEBUG pid=2423031 file=test/test.cc:350 event="test_event" KEY_1="VALUE" KEY_2=1
 ```
+```
+struct test_object {
+  int x;
+  int y;
+};
+template <> struct fmt::formatter<test_object> : formatter<string_view> {
+  auto format(const test_object &t, fmt::format_context &ctx) {
+    return fmt::format_to(ctx.out(), "{} {}", t.x, t.y);
+  }
+};
+struct test_custom {
+  int x;
+  int y;
+};
 
+template <> struct fmt::formatter<test_custom> : formatter<string_view> {
+  auto format(const test_custom &t, fmt::format_context &ctx) {
+    return ctx.out();
+  }
+};
+template <> struct async_logger::custom_store<test_custom> {
+  static size_t alloc_size(const test_custom &t) { return strlen("hello"); };
+  static char *store(char *&buf, test_custom &t) {
+    buf = stpcpy(buf, "hello");
+    return buf;
+  }
+};
+
+```
 其中：
 
 - POLL接口通常在异步线程调用

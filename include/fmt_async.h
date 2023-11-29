@@ -10,6 +10,27 @@
 namespace async_logger::detail {
 
 template <typename Arg, typename Context>
+constexpr decltype(auto) get_raw_type() {
+  if constexpr (stored_as_numeric<Arg>() || stored_as_string<Arg>()) {
+    return declval<Arg>();
+  } else if constexpr (store_as_custom<Arg>()) {
+    using CArg = std::remove_cv_t<std::remove_reference_t<Arg>>;
+    using Type = decltype(custom_store_type<CArg>::store(
+        std::declval<char *&>(), std::declval<CArg &>()));
+    return declval<Type>();
+  } else {
+    return declval<Arg>();
+  }
+}
+
+template <typename Context, typename... Args>
+constexpr size_t get_cstring_num() {
+  constexpr size_t num_cstring =
+      fmt::detail::count<detail::is_cstring<Context, Args>()...>();
+  return num_cstring;
+}
+
+template <typename Arg, typename Context>
 constexpr decltype(auto) get_trans_unname_type() {
   if constexpr (stored_as_numeric<Arg>()) {
     return declval<Arg>();
@@ -20,18 +41,28 @@ constexpr decltype(auto) get_trans_unname_type() {
     using CArg = std::remove_cv_t<std::remove_reference_t<Arg>>;
     using Type = decltype(custom_store_type<CArg>::store(
         std::declval<char *&>(), std::declval<CArg &>()));
-    return declval<Type>();
+    if constexpr (stored_as_string<Type>()) {
+      using RType = fmt::basic_string_view<typename Context::char_type>;
+      return declval<RType>();
+    } else {
+      return declval<Type>();
+    }
   } else {
-    return declval<std::add_const_t<std::remove_reference_t<Arg>> &>();
+    return declval<
+        std::add_const_t<std::remove_reference_t<std::decay_t<Arg>>> &>();
   }
 }
 
 template <typename Arg, typename Context>
 constexpr decltype(auto) get_trans_named_arg_type() {
-  using value_type = decltype(fmt::detail::arg_mapper<Context>().map(
+  using arg_type = decltype(fmt::detail::arg_mapper<Context>().map(
       std::declval<const Arg &>()));
+  using value_type = std::remove_const_t<std::remove_reference_t<arg_type>>;
+
   using transformed_unname_arg_type =
-      decltype(get_trans_unname_type<value_type, Context>());
+      std::remove_const_t<std::remove_reference_t<
+          decltype(get_trans_unname_type<value_type, Context>())>>;
+
   return declval<fmt::detail::named_arg<typename Context::char_type,
                                         transformed_unname_arg_type>>();
 }
@@ -51,7 +82,13 @@ template <typename... Args> struct arg_transformer {
   using type_at = typename std::tuple_element<N, type_tuple>::type;
 
   template <typename Context, size_t N> static constexpr size_t get_obj_size() {
-    if constexpr (stored_as_object<type_at<N>, Context>()) {
+    if constexpr (is_named_arg<type_at<N>>()) {
+      using arg_type = decltype(fmt::detail::arg_mapper<Context>().map(
+          std::declval<const type_at<N> &>()));
+      if constexpr (stored_as_object<arg_type, Context>()) {
+        return sizeof(arg_type);
+      }
+    } else if constexpr (stored_as_object<type_at<N>, Context>()) {
       return sizeof(type_at<N>);
     }
     return 0;
@@ -105,10 +142,24 @@ template <typename Context, size_t CstringIdx, typename Arg, typename... Args>
 static inline constexpr size_t
 get_arg_sizes(size_t *cstring_size, const Arg &arg, const Args &...args) {
   if constexpr (is_named_arg<Arg>()) {
+    using arg_type = decltype(fmt::detail::arg_mapper<Context>().map(
+        std::declval<const Arg &>()));
+    using value_type = std::remove_const_t<std::remove_reference_t<arg_type>>;
     if constexpr (stored_as_string<Arg>()) {
       return sizeof(fmt::basic_string_view<typename Context::char_type>) +
              get_arg_sizes<Context, CstringIdx>(cstring_size, arg.value,
                                                 args...);
+    } else if constexpr (store_as_custom<value_type>()) {
+      using rtn_type = decltype(custom_store_type<value_type>::store(
+          std::declval<char *&>(), std::declval<value_type &>()));
+      if constexpr (stored_as_string<rtn_type>()) {
+        return sizeof(fmt::basic_string_view<typename Context::char_type>) +
+               get_arg_sizes<Context, CstringIdx>(cstring_size, arg.value,
+                                                  args...);
+      } else {
+        return get_arg_sizes<Context, CstringIdx>(cstring_size, arg.value,
+                                                  args...);
+      }
     } else {
       return get_arg_sizes<Context, CstringIdx>(cstring_size, arg.value,
                                                 args...);
@@ -124,7 +175,6 @@ get_arg_sizes(size_t *cstring_size, const Arg &arg, const Args &...args) {
       size_t len = arg.size();
       return len + get_arg_sizes<Context, CstringIdx>(cstring_size, args...);
     } else if constexpr (store_as_custom<Arg>()) {
-
       return custom_store_type<Arg>::alloc_size(arg) +
              get_arg_sizes<Context, CstringIdx>(cstring_size, args...);
     } else if constexpr (stored_as_numeric<Arg, Context>()) {
@@ -312,10 +362,29 @@ template <typename Context, typename... Args> struct async_entry_constructor {
     using Arg = arg_at<N>;
     constexpr bool named_arg = detail::is_named_arg<Arg>();
     if constexpr (named_arg) {
-      if constexpr (detail::store_as_custom<Arg>()) {
-        return fmt::arg(arg.name, custom_store_type<Arg>::store(
-                                      pBuffer, std::forward<Arg>(arg)));
-      } else if constexpr (detail::stored_as_string<Arg, Context>()) {
+      using value_type = std::remove_reference_t<
+          std::remove_const_t<decltype(fmt::detail::arg_mapper<Context>().map(
+              std::declval<Arg>()))>>;
+      if constexpr (detail::store_as_custom<value_type>()) {
+        using custom_arg_type =
+            std::remove_cv_t<std::remove_reference_t<value_type>>;
+        using Type = decltype(custom_store_type<custom_arg_type>::store(
+            std::declval<char *&>(), std::declval<custom_arg_type &>()));
+        if constexpr (detail::stored_as_string<Type>()) {
+          fmt::basic_string_view<char_type> s(
+              custom_store_type<custom_arg_type>::store(pBuffer, arg.value),
+              custom_store_type<custom_arg_type>::alloc_size(arg.value));
+          char *pstart = pBuffer;
+          memcpy(pBuffer, &s, sizeof(s));
+          pBuffer += sizeof(s);
+          return fmt::arg(arg.name,
+                          *(fmt::basic_string_view<char_type> *)pstart);
+        } else {
+          return fmt::arg(arg.name, custom_store_type<custom_arg_type>::store(
+                                        pBuffer, arg.value));
+        }
+
+      } else if constexpr (detail::stored_as_string<value_type, Context>()) {
         auto s = copy_string_all<N>(
             pBuffer, cstring_sizes,
             fmt::detail::arg_mapper<Context>().map(std::forward<Arg>(arg)));
@@ -323,13 +392,16 @@ template <typename Context, typename... Args> struct async_entry_constructor {
         memcpy(pBuffer, &s, sizeof(s));
         pBuffer += sizeof(s);
         return fmt::arg(arg.name, *(fmt::basic_string_view<char_type> *)pstart);
-      } else if constexpr (detail::stored_as_numeric<Arg, Context>()) {
+      } else if constexpr (detail::stored_as_numeric<value_type, Context>()) {
         return std::forward<Arg>(arg);
       } else {
         char *const pobjs = pentry + sizeof(entry);
         char *const pobj = pobjs + trans::template get_obj_offset<Context, N>();
-        using Type = type_at<N>;
-        auto p = new (pobj) Type(std::forward<Arg>(arg));
+        using arg_type = decltype(fmt::detail::arg_mapper<Context>().map(
+            std::declval<const type_at<N> &>()));
+        // copy arg
+        using Type = std::remove_const_t<std::remove_reference_t<arg_type>>;
+        auto p = new (pobj) Type(arg.value);
         return fmt::arg(arg.name, *p);
       }
     } else {
