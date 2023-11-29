@@ -2,6 +2,7 @@
 #include "log.h"
 #include "log_helper.h"
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -11,7 +12,9 @@
 #include <fmt/ranges.h>
 #include <gtest/gtest.h>
 #include <string_view>
+#include <thread>
 #include <type_traits>
+#include <unistd.h>
 #include <utility>
 
 using context = fmt::format_context;
@@ -44,6 +47,27 @@ template <> struct async_logger::custom_store<test_custom> {
   }
 };
 
+struct test_custom_1 {
+  int x;
+  int y;
+};
+
+template <> struct fmt::formatter<test_custom_1> : formatter<string_view> {
+  auto format(const test_custom_1 &t, fmt::format_context &ctx) {
+    return fmt::format_to(ctx.out(), "{} {}", t.x, t.y);
+  }
+};
+template <> struct async_logger::custom_store<test_custom_1> {
+  static size_t alloc_size(const test_custom_1 &t) {
+    return sizeof(test_custom_1);
+  };
+  static test_custom_1 &store(char *&buf, test_custom_1 &t) {
+    char *p_start = buf;
+    memcpy(buf, &t, sizeof(test_custom_1));
+    buf += sizeof(test_custom_1);
+    return *(test_custom_1 *)p_start;
+  }
+};
 TEST(async_logger, trans_arg_type) {
   using namespace async_logger::detail;
   static_assert(
@@ -252,7 +276,8 @@ TEST(async_logger, log) {
 
   test_object obj{1, 2};
   test_custom custom{1, 2};
-  ASYNC_LOG(LOG_DEBUG, "{} {} {}", 1, obj, custom);
+  test_custom_1 custom1{1, 2};
+  ASYNC_LOG(LOG_DEBUG, "{} {} {} {}", 1, obj, custom, custom1);
   std::string s = "test";
   const char buf[] = "const buf array";
   char buf2[64];
@@ -263,7 +288,7 @@ TEST(async_logger, log) {
   POLL();
   auto t0 = detail::get_current_nano_sec();
   for (int i = 0; i < 10000; i++) {
-    ASYNC_LOG(LOG_DEBUG, "log message with one parameters {}", 1);
+    ASYNC_LOG(LOG_DEBUG, "log message with one parameters {} {}", 1, "test");
   }
   auto t1 = detail::get_current_nano_sec();
   std::cout << (t1 - t0) / 10000.0 << std::endl;
@@ -291,20 +316,6 @@ public:
 struct md {
   double ask_p1;
   double bid_p1;
-  double ask_p2;
-  double ask_p3;
-  double ask_p4;
-  double ask_p5;
-  double ask_p6;
-  double ask_p7;
-  double ask_p8;
-  double ask_p9;
-  double ask_p10;
-  double ask_p11;
-  double ask_p12;
-  double ask_p13;
-  double ask_p14;
-  double ask_p15;
 };
 
 class md_stream_impl {
@@ -360,6 +371,50 @@ TEST(async_logger, field) {
   md_stream::i_stream_msg *md_msg = &msg;
   ASYNC_LOG(LOG_DEBUG, "{}", *md_msg);
   POLL();
+}
+
+TEST(async_logger, thread_test) {
+  POLL();
+  SET_LOG_FILE("thread_test.log");
+  std::atomic<bool> flag1{true};
+  std::atomic<bool> flag2{true};
+  std::atomic<bool> flag3{true};
+
+  std::thread async{[&flag1, &flag2, &flag3]() {
+    while (flag1 || flag2 || flag3) {
+      POLL();
+      usleep(100);
+    }
+    POLL();
+  }};
+  std::thread t1{[&flag1]() {
+    for (int i = 0; i < 10000; i++) {
+      ASYNC_LOG(LOG_DEBUG, "thread 1 log message with two parameters {} {}", i,
+                "test");
+      usleep(99);
+    }
+    flag1 = false;
+  }};
+  std::thread t2{[&flag2]() {
+    for (int i = 0; i < 10000; i++) {
+      ASYNC_LOG(LOG_DEBUG, "thread 2 log message with two parameters {} {}", i,
+                "test");
+      usleep(499);
+    }
+    flag2 = false;
+  }};
+  std::thread t3{[&flag3]() {
+    for (int i = 0; i < 10000; i++) {
+      ASYNC_LOG(LOG_DEBUG, "thread 3 log message with two parameters {} {}", i,
+                "test");
+      usleep(999);
+    }
+    flag3 = false;
+  }};
+  async.join();
+  t1.join();
+  t2.join();
+  t3.join();
 }
 
 int main(int argc, char **argv) {

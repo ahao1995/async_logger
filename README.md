@@ -47,12 +47,41 @@ template <> struct fmt::formatter<test_custom> : formatter<string_view> {
 };
 template <> struct async_logger::custom_store<test_custom> {
   static size_t alloc_size(const test_custom &t) { return strlen("hello"); };
+  //return type should have fmt::formatter, you can return your custom type
   static char *store(char *&buf, test_custom &t) {
+    char *p_start = buf;
     buf = stpcpy(buf, "hello");
-    return buf;
+    return p_start;
   }
 };
 
+struct test_custom_1 {
+  int x;
+  int y;
+};
+
+template <> struct fmt::formatter<test_custom_1> : formatter<string_view> {
+  auto format(const test_custom_1 &t, fmt::format_context &ctx) {
+    return fmt::format_to(ctx.out(), "{} {}", t.x, t.y);
+  }
+};
+template <> struct async_logger::custom_store<test_custom_1> {
+  static size_t alloc_size(const test_custom_1 &t) {
+    return sizeof(test_custom_1);
+  };
+  static test_custom_1 &store(char *&buf, test_custom_1 &t) {
+    char *p_start = buf;
+    memcpy(buf, &t, sizeof(test_custom_1));
+    buf += sizeof(test_custom_1);
+    return *(test_custom_1 *)p_start;
+  }
+};
+
+test_object obj{1, 2};
+//store时，在内存中写了hello，可以根据需求自行返回类型，返回的类型将会存在arg store中，如果是custom 需要提供对应的fmt::formatter
+test_custom custom{1, 2};
+test_custom_1 custom1{1, 2};
+ASYNC_LOG(LOG_DEBUG, "{} {} {} {}", 1, obj, custom, custom1);
 ```
 其中：
 

@@ -23,9 +23,10 @@ enum {
 
 #define ASYNC_LOG(level, format, ...)                                          \
   do {                                                                         \
-    static constexpr async_logger::log_info i{level,    __LINE__,     format,  \
-                                              __FILE__, __FUNCTION__, false};  \
-    log_instance.log<fmt::format_context>(&i, ##__VA_ARGS__);                  \
+    static constexpr async_logger::log_info async_logger_log_info{             \
+        level, __LINE__, format, __FILE__, __FUNCTION__, false};               \
+    log_instance.log<fmt::format_context>(&async_logger_log_info,              \
+                                          ##__VA_ARGS__);                      \
   } while (0)
 
 #define ASYNC_LOG_KV(level, event, ...)                                        \
