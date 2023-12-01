@@ -1,5 +1,5 @@
+#include "async_log.h"
 #include "fmt_async.h"
-#include "log.h"
 #include "log_helper.h"
 #include <array>
 #include <atomic>
@@ -144,16 +144,16 @@ TEST(async_logger, alloc_size) {
   auto value_size = sizeof(fmt::detail::value<context>);
   size_t cstring_size[2];
   detail::stored_as_numeric<int, context>();
-  auto s = alloc_size<context>(cstring_size, 1, "TEST", 1, 1, "TEST2");
+  auto s = alloc_size_with_cstring_size<context>(cstring_size, 1, "TEST", 1, 1, "TEST2");
   ASSERT_EQ(s, base + 5 * value_size + strlen("TEST") + strlen("TEST2"));
   ASSERT_EQ(cstring_size[0], 4);
   ASSERT_EQ(cstring_size[1], 5);
   test_custom t;
-  s = alloc_size<fmt::format_context>(cstring_size, 1, t);
+  s = alloc_size_with_cstring_size<fmt::format_context>(cstring_size, 1, t);
   ASSERT_EQ(s, base + 2 * value_size + strlen("hello"));
 
   // test named arg
-  s = alloc_size<context>(cstring_size, 1, "TEST", 1, 1,
+  s = alloc_size_with_cstring_size<context>(cstring_size, 1, "TEST", 1, 1,
                           fmt::arg("test2", "test2"));
   using arg_store = format_arg_store<
       context, int, fmt::basic_string_view<char>, int, int,
@@ -180,9 +180,10 @@ void test_arg_store(const S &fmt, Args &&...args) {
   auto entry = (async_entry<context> *)(buf);
   size_t cstring_sizes[std::max(detail::get_cstring_num<context, Args...>(),
                                 (size_t)1)];
-  size_t s = alloc_size<fmt::format_context>(cstring_sizes, args...);
-  auto store_size =
-      store((void *)buf, fmt, cstring_sizes, std::forward<Args>(args)...);
+  size_t s =
+      alloc_size_with_cstring_size<fmt::format_context>(cstring_sizes, args...);
+  auto store_size = store_with_cstring_size((void *)buf, fmt, cstring_sizes,
+                                            std::forward<Args>(args)...);
   std::string test = format(*entry);
   ASSERT_EQ(store_size, s);
   ASSERT_EQ(test, target);
@@ -212,6 +213,19 @@ TEST(async_logger, arg_store) {
                  "name"_a = "World", "number"_a = std::string("test"));
 }
 
+TEST(async_logger, bench) {
+  using namespace async_logger;
+  using namespace fmt::literals;
+  char buf[1024];
+  auto t0 = detail::get_current_nano_sec();
+  for (int i = 0; i < 10000; i++) {
+        store_with_cstring_size((void *)buf, "{} {} {} {} {}", nullptr, 0.5, 0.7, 1, 2, 3);
+  }
+  auto t1 = detail::get_current_nano_sec();
+  auto entry = (async_entry<context> *)(buf);
+  std::string test = format(*entry);
+  std::cout << (t1 - t0) / 10000.0 << " " << test << std::endl;
+}
 struct test_dtor {
   test_dtor(int val) : v(val) {}
   ~test_dtor() { dtor_cnt++; }

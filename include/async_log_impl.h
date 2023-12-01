@@ -1,8 +1,12 @@
+#include "async_log_macro.h"
 #include "file_helper.h"
+#include "fmt/core.h"
 #include "fmt_async.h"
 #include "log_buffer.h"
 #include "log_helper.h"
 #include "nanots.h"
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -10,49 +14,69 @@
 #include <functional>
 #include <mutex>
 #include <stdint.h>
+#include <string_view>
 #include <vector>
 
 namespace async_logger {
 struct log_info {
-  constexpr log_info(const int level, const int line, const char *fmt,
-                     const char *file, const char *func, bool is_kv)
+  constexpr log_info(const int level, const int line,
+                     const std::string_view fmt, const std::string_view file,
+                     const std::string_view func, bool is_kv)
       : level(level), line(line), fmt(fmt), file(file), func(func),
-        is_kv(is_kv) {}
+        is_kv(is_kv), pos(file.rfind('/')) {}
   const int level;
   const int line;
-  const char *fmt;
-  const char *file;
-  const char *func;
-  bool is_kv;
+  const std::string_view fmt;
+  const std::string_view file;
+  const std::string_view func;
+  const bool is_kv;
+  const size_t pos;
 };
 
 class logger {
 public:
-  ~logger() = default;
-  logger() = default;
+  logger() {
+    header_args_.reserve(4096);
+    header_args_.resize(5);
+    set_arg<0>(fmt::string_view());
+    set_arg<1>(fmt::string_view());
+    set_arg<2>(fmt::string_view());
+    set_arg<3>(fmt::string_view());
+    set_arg<4>(1);
+  }
+
+  ~logger() {
+    if (write_buffer_.size()) {
+      flush_log_file();
+    }
+    file_helper_.close();
+  }
   template <typename Context, typename... Args>
   inline void log(const log_info *info, Args &&...args) {
     if (info->level < cur_level_) {
       return;
     }
-    uint64_t timestamp = detail::get_current_nano_sec(); // todo: rdtsc
+    // todo: rdtsc
+    uint64_t timestamp = detail::get_current_nano_sec();
     constexpr size_t num_cstring =
         fmt::detail::count<detail::is_cstring<Context, Args>()...>();
     size_t cstring_sizes[std::max(num_cstring, (size_t)1)];
-    size_t s = alloc_size<fmt::format_context>(cstring_sizes, args...) +
+    size_t s = alloc_size_with_cstring_size<fmt::format_context>(cstring_sizes,
+                                                                 args...) +
                sizeof(addtion_info);
     auto header = alloc(s);
     if (!header) {
       // todo:set callback
-      std::cout << "queue full..." << std::endl;
+      fprintf(stderr, "queue_full...\n");
       return;
     }
     char *write_pos = (char *)(header + 1);
     addtion_info add_info{timestamp, info};
     memcpy(write_pos, &add_info, sizeof(addtion_info));
     write_pos += sizeof(addtion_info);
-    store((void *)write_pos, info->fmt, cstring_sizes,
-          std::forward<Args>(args)...);
+    store_with_cstring_size((void *)write_pos, info->fmt, cstring_sizes,
+                            std::forward<Args>(args)...);
+
     header->push(s);
   }
   void set_log_file(const char *filename) { file_helper_.open(filename); }
@@ -84,25 +108,58 @@ private:
     }
     return log_buffer_->alloc(size);
   }
+  template <size_t I, typename T> void set_arg(const T &arg) {
+    header_args_[I] = fmt::detail::make_arg<fmt::format_context>(arg);
+  }
+  template <size_t I, typename T> void set_arg_val(const T &arg) {
+    fmt::detail::value<fmt::format_context> &value_ =
+        *(fmt::detail::value<fmt::format_context> *)&header_args_[I];
+    value_ = fmt::detail::arg_mapper<fmt::format_context>().map(arg);
+  }
+  void flush_log_file() {
+    if (file_helper_.is_open()) {
+      file_helper_.write(write_buffer_.data(), write_buffer_.size());
+      file_helper_.flush();
+    }
+    write_buffer_.clear();
+  }
 
-  void adjust_heap(size_t i) {
-    while (true) {
-      size_t min_i = i;
-      size_t ch = std::min(i * 2 + 1, bg_thread_buffers_.size());
-      size_t end = std::min(ch + 2, bg_thread_buffers_.size());
-      for (; ch < end; ch++) {
-        auto h_ch = bg_thread_buffers_[ch].header;
-        auto h_min = bg_thread_buffers_[min_i].header;
-        if (h_ch &&
-            (!h_min || *(int64_t *)(h_ch + 1) < *(int64_t *)(h_min + 1)))
-          min_i = ch;
+  void handle_log(fmt::string_view thread_name, const char *data) {
+    addtion_info *info = (addtion_info *)(data);
+    data += sizeof(addtion_info);
+    auto entry = (async_entry<fmt::format_context> *)(data);
+    static const std::array<fmt::string_view, 6> log_level_names{
+        "TRACE", "DEBUG", "INFO ", "WARN ", "ERROR", "FATAL"};
+    set_arg_val<0>(thread_name);
+    set_arg_val<1>(log_level_names[info->info->level]);
+    set_arg_val<2>(ts_.convert(info->ts));
+    set_arg_val<3>(info->info->file.substr(info->info->pos + 1));
+    set_arg_val<4>(info->info->line);
+    if (!info->info->is_kv) {
+      static fmt::string_view header_pattern{"[{}] [{}] {} {}:{} "};
+      fmt::detail::vformat_to(write_buffer_, header_pattern,
+                              fmt::basic_format_args(header_args_.data(), 5));
+    } else {
+      static fmt::string_view kv_header_pattern{
+          "ts={} level={} pid={} file={}:{} "};
+      fmt::detail::vformat_to(write_buffer_, kv_header_pattern,
+                              fmt::basic_format_args(header_args_.data(), 5));
+    }
+    try {
+      format_to(*entry, fmt::appender(write_buffer_));
+    } catch (...) {
+      fmt::format_to(fmt::appender(write_buffer_), "format error");
+    }
+    write_buffer_.push_back('\n');
+    if (file_helper_.is_open()) {
+      if (write_buffer_.size() >= flush_buf_size_) {
+        flush_log_file();
       }
-      if (min_i == i)
-        break;
-      std::swap(bg_thread_buffers_[i], bg_thread_buffers_[min_i]);
-      i = min_i;
+    } else {
+      fwrite(write_buffer_.data(), 1, write_buffer_.size(), stdout);
     }
   }
+
   void poll_inner() {
     uint64_t ts = detail::get_current_nano_sec();
     if (thread_buffers_.size()) {
@@ -137,38 +194,30 @@ private:
         break;
       auto tb = bg_thread_buffers_[0].tb;
       const char *data = (const char *)(header + 1);
-      addtion_info *info = (addtion_info *)(data);
-      data += sizeof(addtion_info);
-      auto entry = (async_entry<fmt::format_context> *)(data);
-      static const char *log_level_names[] = {"TRACE", "DEBUG", "INFO ",
-                                              "WARN ", "ERROR", "FATAL"};
-      if (!info->info->is_kv) {
-        fmt::format_to(fmt::appender(write_buffer_), "[{}] [{}] {} {}:{} ",
-                       tb->get_name(), log_level_names[info->info->level],
-                       ts_.convert(info->ts), info->info->file,
-                       info->info->line);
-      } else {
-        fmt::format_to(
-            fmt::appender(write_buffer_), "ts={} level={} pid={} file={}:{} ",
-            ts_.convert(info->ts), log_level_names[info->info->level],
-            tb->get_name(), info->info->file, info->info->line);
-      }
-      try {
-        format_to(*entry, fmt::appender(write_buffer_));
-      } catch (...) {
-        fmt::format_to(fmt::appender(write_buffer_), "format error");
-      }
-      fmt::format_to(fmt::appender(write_buffer_), "\n");
-      if (file_helper_.is_open()) {
-        file_helper_.write(write_buffer_.data(), write_buffer_.size());
-        file_helper_.flush();
-      } else {
-        fwrite(write_buffer_.data(), 1, write_buffer_.size(), stdout);
-      }
-      write_buffer_.clear();
+      handle_log(tb->get_name(), data);
       tb->pop();
       bg_thread_buffers_[0].header = tb->front();
       adjust_heap(0);
+    }
+    flush_log_file();
+  }
+
+  void adjust_heap(size_t i) {
+    while (true) {
+      size_t min_i = i;
+      size_t ch = std::min(i * 2 + 1, bg_thread_buffers_.size());
+      size_t end = std::min(ch + 2, bg_thread_buffers_.size());
+      for (; ch < end; ch++) {
+        auto h_ch = bg_thread_buffers_[ch].header;
+        auto h_min = bg_thread_buffers_[min_i].header;
+        if (h_ch &&
+            (!h_min || *(int64_t *)(h_ch + 1) < *(int64_t *)(h_min + 1)))
+          min_i = ch;
+      }
+      if (min_i == i)
+        break;
+      std::swap(bg_thread_buffers_[i], bg_thread_buffers_[min_i]);
+      i = min_i;
     }
   }
 
@@ -203,8 +252,10 @@ private:
   inline static thread_local log_buffer_destroyer sbc_{};
   std::vector<log_buffer *> thread_buffers_;
   std::mutex buffer_mutex_;
-  using buffer = fmt::basic_memory_buffer<char, 2048>;
+  using buffer = fmt::basic_memory_buffer<char, 10000>;
   buffer write_buffer_;
+  uint32_t flush_buf_size_{8 * 1024};
+  std::vector<fmt::basic_format_arg<fmt::format_context>> header_args_;
 };
 
 } // namespace async_logger

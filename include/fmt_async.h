@@ -5,7 +5,6 @@
 #include <cstring>
 #include <fmt/core.h>
 #include <fmt/format.h>
-#include <iostream>
 #include <type_traits>
 namespace async_logger::detail {
 
@@ -267,7 +266,7 @@ public:
     desc = desc_;
     auto &format_args = args.*(std::get<1>(tp));
     format_args = get_format_args();
-    return vformat_to(out, format_, args);
+    return fmt::vformat_to(out, format_, args);
   }
 };
 
@@ -310,10 +309,15 @@ template <typename Context, typename... Args> struct async_entry_constructor {
   template <typename S>
   static size_t make_async_entry(void *buf, const S &format_str,
                                  size_t *cstring_sizes, Args &&...args) {
-    return async_entry_constructor<Context, Args...>(
-               buf, format_str, cstring_sizes, range(),
-               std::forward<Args>(args)...)
-        .get_total_size();
+    if constexpr (sizeof...(Args) == 0) {
+      new (buf) entry(format_str);
+      return sizeof(entry);
+    } else {
+      return async_entry_constructor<Context, Args...>(
+                 buf, format_str, cstring_sizes, range(),
+                 std::forward<Args>(args)...)
+          .get_total_size();
+    }
   }
 
   using entry =
@@ -496,7 +500,7 @@ inline auto format_to(basic_async_entry<Context> &entry, OutIt out)
 
 // cstring_sizes avoid strlen twice
 template <typename Context, typename... Args>
-constexpr size_t alloc_size(size_t *cstring_size, Args &&...args) {
+constexpr size_t alloc_size_with_cstring_size(size_t *cstring_size, Args &&...args) {
   using entry =
       async_entry<Context,
                   std::decay_t<detail::transformed_arg_type<Args, Context>>...>;
@@ -505,7 +509,7 @@ constexpr size_t alloc_size(size_t *cstring_size, Args &&...args) {
 }
 
 template <typename S, typename... Args, typename Char = fmt::char_t<S>>
-inline size_t store(void *buf, const S &format_str, size_t *cstring_sizes,
+inline size_t store_with_cstring_size(void *buf, const S &format_str, size_t *cstring_sizes,
                     Args &&...args) {
   using Context = fmt::format_context;
   using Constructor = async_entry_constructor<Context, Args &&...>;

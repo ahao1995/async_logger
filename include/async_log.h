@@ -1,5 +1,4 @@
-#include "log_impl.h"
-#include "log_macro.h"
+#include "async_log_impl.h"
 
 enum {
   LOG_TRACE = 0,
@@ -24,7 +23,7 @@ enum {
 #define ASYNC_LOG(level, format, ...)                                          \
   do {                                                                         \
     static constexpr async_logger::log_info async_logger_log_info{             \
-        level, __LINE__, format, __FILE__, __FUNCTION__, false};               \
+        level, __LINE__, format, "test/test.cc", __FUNCTION__, false};               \
     log_instance.log<fmt::format_context>(&async_logger_log_info,              \
                                           ##__VA_ARGS__);                      \
   } while (0)

@@ -1,5 +1,5 @@
 #define PP_CONCAT(A, B) PP_CONCAT_IMPL(A, B)
-#define PP_CONCAT_IMPL(A, B) A##B
+#define PP_CONCAT_IMPL(A, B) A ## B
 #define PP_REMOVE_PARENS(T) PP_REMOVE_PARENS_IMPL T
 #define PP_REMOVE_PARENS_IMPL(...) __VA_ARGS__
 
