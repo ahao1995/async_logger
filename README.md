@@ -13,7 +13,7 @@
 #### 使用
 
 ```C++
-include "log.h"
+include "async_log.h"
 int main() {
     PRE_ALLOC();
     SET_LOG_FILE("test.log");
