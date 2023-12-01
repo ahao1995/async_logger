@@ -12,6 +12,14 @@
 
 #### 使用
 
+```
+git@github.com:ahao1995/async_logger.git
+cd async_logger
+git submodule init
+git submodule update
+mkdir build && cd build && cmake .. && make
+```
+
 ```C++
 include "async_log.h"
 int main() {
